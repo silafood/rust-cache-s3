@@ -1,8 +1,11 @@
 // https://github.com/actions/toolkit/blob/%40actions/cache%403.2.2/packages/cache/src/cache.ts
 
 import * as core from "@actions/core";
+import * as exec from "@actions/exec";
+import * as io from "@actions/io";
 import * as path from "path";
 import * as utils from "@actions/cache/lib/internal/cacheUtils";
+import { CompressionMethod } from "@actions/cache/lib/internal/constants";
 import * as cacheHttpClient from "./backend";
 import {
     createTar,
@@ -67,6 +70,34 @@ export function isFeatureAvailable(): boolean {
     return !!process.env["RUNS_ON_S3_BUCKET_CACHE"];
 }
 
+// @actions/cache's getCompressionMethod runs `zstd --quiet --version` which
+// suppresses stdout on many zstd builds, causing a silent fallback to gzip.
+// This replacement runs `zstd --version` without --quiet so detection works correctly.
+async function getCompressionMethod(): Promise<CompressionMethod> {
+    const zstdPath = await io.which("zstd", false);
+    if (!zstdPath) {
+        return CompressionMethod.Gzip;
+    }
+    let versionOutput = "";
+    try {
+        await exec.exec("zstd", ["--version"], {
+            ignoreReturnCode: true,
+            silent: true,
+            listeners: {
+                stdout: (data: Buffer) => (versionOutput += data.toString()),
+                stderr: (data: Buffer) => (versionOutput += data.toString())
+            }
+        });
+    } catch {
+        // ignore
+    }
+    if (!versionOutput) {
+        return CompressionMethod.Gzip;
+    }
+    core.debug(`zstd detected: ${versionOutput.trim().split("\n")[0]}`);
+    return CompressionMethod.ZstdWithoutLong;
+}
+
 /**
  * Restores cache from keys
  *
@@ -101,7 +132,7 @@ export async function restoreCache(
         checkKey(key);
     }
 
-    const compressionMethod = await utils.getCompressionMethod();
+    const compressionMethod = await getCompressionMethod();
     let archivePath = "";
     try {
         // path are needed to compute version
@@ -197,7 +228,7 @@ export async function saveCache(
     checkPaths(paths);
     checkKey(key);
 
-    const compressionMethod = await utils.getCompressionMethod();
+    const compressionMethod = await getCompressionMethod();
     let cacheId = -1;
 
     const cachePaths = await utils.resolvePaths(paths);
