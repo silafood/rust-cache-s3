@@ -25,6 +25,7 @@ export interface ArtifactCacheEntry {
 // see unsetCredentials() in https://github.com/aws-actions/configure-aws-credentials/blob/v4.0.2/src/helpers.ts#L44
 // Note: we preserve AWS_REGION and AWS_DEFAULT_REGION as they are needed for SDK initialization
 if (process.env.RUNS_ON_RUNNER_NAME && process.env.RUNS_ON_RUNNER_NAME !== "") {
+    core.debug("RunsOn runner detected — clearing AWS credential env vars to use IAM instance profile");
     delete process.env.AWS_ACCESS_KEY_ID;
     delete process.env.AWS_SECRET_ACCESS_KEY;
     delete process.env.AWS_SESSION_TOKEN;
@@ -47,6 +48,10 @@ const uploadPartSize =
 const downloadQueueSize = Number(process.env.DOWNLOAD_QUEUE_SIZE || "8");
 const downloadPartSize =
     Number(process.env.DOWNLOAD_PART_SIZE || "16") * 1024 * 1024;
+
+core.debug(`S3 cache config: bucket=${bucketName}, region=${region}, endpoint=${endpoint || "default"}, forcePathStyle=${forcePathStyle}`);
+core.debug(`S3 upload config: partSize=${uploadPartSize / (1024 * 1024)}MB, queueSize=${uploadQueueSize}`);
+core.debug(`S3 download config: partSize=${downloadPartSize / (1024 * 1024)}MB, queueSize=${downloadQueueSize}`);
 
 const s3Client = new S3Client({ region, forcePathStyle, endpoint });
 
@@ -98,40 +103,47 @@ export async function getCacheEntry(
     { compressionMethod, enableCrossOsArchive }: { compressionMethod?: CompressionMethod; enableCrossOsArchive?: boolean }
 ) {
     const cacheEntry: ArtifactCacheEntry = {};
+    const s3Prefix = getS3Prefix(paths, { compressionMethod, enableCrossOsArchive });
+
+    core.debug(`S3 cache lookup: bucket=${bucketName}, prefix=${s3Prefix}`);
+    core.debug(`S3 restore keys: ${JSON.stringify(keys)}`);
 
     // Find the most recent key matching one of the restoreKeys prefixes
     for (const restoreKey of keys) {
-        const s3Prefix = getS3Prefix(paths, {
-            compressionMethod,
-            enableCrossOsArchive
-        });
+        const lookupPrefix = [s3Prefix, restoreKey].join("/");
+        core.debug(`S3 listing objects with prefix: ${lookupPrefix}`);
+
         const listObjectsParams = {
             Bucket: bucketName,
-            Prefix: [s3Prefix, restoreKey].join("/")
+            Prefix: lookupPrefix
         };
 
         try {
             const { Contents = [] } = await s3Client.send(
                 new ListObjectsV2Command(listObjectsParams)
             );
+            core.debug(`S3 found ${Contents.length} object(s) for key prefix '${restoreKey}'`);
+
             if (Contents.length > 0) {
                 // Sort keys by LastModified time in descending order
                 const sortedKeys = Contents.sort(
                     (a, b) => Number(b.LastModified) - Number(a.LastModified)
                 );
-                const s3Path = sortedKeys[0].Key; // Return the most recent key
+                const s3Path = sortedKeys[0].Key;
                 cacheEntry.cacheKey = s3Path?.replace(`${s3Prefix}/`, "");
                 cacheEntry.archiveLocation = `s3://${bucketName}/${s3Path}`;
+                core.debug(`S3 cache hit: key='${cacheEntry.cacheKey}', location='${cacheEntry.archiveLocation}'`);
                 return cacheEntry;
             }
         } catch (error) {
-            console.error(
-                `Error listing objects with prefix ${restoreKey} in bucket ${bucketName}:`,
-                error
+            core.debug(`S3 error listing objects for prefix '${restoreKey}': ${(error as Error).message}`);
+            core.warning(
+                `Error listing objects with prefix ${restoreKey} in bucket ${bucketName}: ${(error as Error).message}`
             );
         }
     }
 
+    core.debug("S3 cache miss — no matching objects found for any restore key");
     return cacheEntry; // No keys found
 }
 
@@ -151,12 +163,16 @@ export async function downloadCache(
     const archiveUrl = new URL(archiveLocation);
     const objectKey = archiveUrl.pathname.slice(1);
 
+    core.debug(`S3 downloading: bucket=${bucketName}, key=${objectKey}`);
+    core.debug(`S3 download settings: concurrency=${downloadQueueSize}, partSize=${downloadPartSize / (1024 * 1024)}MB`);
+
     // Retry logic for download validation failures
     const maxRetries = 3;
     let lastError: Error | undefined;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
+            core.debug(`S3 generating presigned URL (attempt ${attempt}/${maxRetries}, expires in 3600s)`);
             const command = new GetObjectCommand({
                 Bucket: bucketName,
                 Key: objectKey
@@ -164,6 +180,7 @@ export async function downloadCache(
             const url = await getSignedUrl(s3Client, command, {
                 expiresIn: 3600
             });
+            core.debug("S3 presigned URL generated, starting concurrent download");
 
             await downloadCacheHttpClientConcurrent(url, archivePath, {
                 ...options,
@@ -172,11 +189,14 @@ export async function downloadCache(
                 partSize: downloadPartSize
             });
 
+            core.debug(`S3 download complete: ${archivePath}`);
             // If we get here, download succeeded
             return;
         } catch (error) {
             const errorMessage = (error as Error).message;
             lastError = error as Error;
+
+            core.debug(`S3 download attempt ${attempt} failed: ${errorMessage}`);
 
             // Only retry on validation failures, not on other errors
             if (
@@ -223,6 +243,9 @@ export async function saveCache(
     });
     const s3Key = `${s3Prefix}/${key}`;
 
+    core.debug(`S3 saving cache: bucket=${bucketName}, key=${s3Key}`);
+    core.debug(`S3 upload settings: partSize=${uploadPartSize / (1024 * 1024)}MB, queueSize=${uploadQueueSize}`);
+
     const multipartUpload = new Upload({
         client: s3Client,
         params: {
@@ -246,10 +269,14 @@ export async function saveCache(
 
     const totalParts = Math.ceil(cacheSize / uploadPartSize);
     core.info(`Uploading cache from ${archivePath} to ${bucketName}/${s3Key}`);
+    core.debug(`S3 multipart upload: ${totalParts} part(s) expected`);
+
     multipartUpload.on("httpUploadProgress", progress => {
+        core.debug(`S3 upload progress: part ${progress.part}/${totalParts}, loaded=${progress.loaded} bytes`);
         core.info(`Uploaded part ${progress.part}/${totalParts}.`);
     });
 
     await multipartUpload.done();
+    core.debug(`S3 multipart upload complete: ${bucketName}/${s3Key}`);
     core.info(`Cache saved successfully.`);
 }

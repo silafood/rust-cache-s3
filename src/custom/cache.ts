@@ -122,7 +122,9 @@ export async function restoreCache(
     restoreKeys = restoreKeys || [];
     const keys = [primaryKey, ...restoreKeys];
 
-    core.debug("Resolved Keys:");
+    core.debug("S3 restoreCache: starting");
+    core.debug(`S3 restoreCache: paths=${JSON.stringify(paths)}`);
+    core.debug("S3 restoreCache: resolved keys:");
     core.debug(JSON.stringify(keys));
 
     if (keys.length > 10) {
@@ -143,9 +145,12 @@ export async function restoreCache(
             enableCrossOsArchive
         });
         if (!cacheEntry?.archiveLocation) {
+            core.debug("S3 restoreCache: no cache entry found");
             // Cache not found
             return undefined;
         }
+
+        core.debug(`S3 restoreCache: cache hit — key='${cacheEntry.cacheKey}', location='${cacheEntry.archiveLocation}'`);
 
         if (options?.lookupOnly) {
             core.info("Lookup only - skipping download");
@@ -183,8 +188,10 @@ export async function restoreCache(
             );
         }
 
+        core.debug(`S3 restoreCache: extracting archive at ${archivePath}`);
         await extractTar(archivePath, compressionMethod);
         core.info("Cache restored successfully");
+        core.debug(`S3 restoreCache: done — restored with key '${cacheEntry.cacheKey}'`);
 
         return cacheEntry.cacheKey;
     } catch (error) {
@@ -230,11 +237,14 @@ export async function saveCache(
     checkPaths(paths);
     checkKey(key);
 
+    core.debug(`S3 saveCache: starting — key='${key}'`);
+    core.debug(`S3 saveCache: paths=${JSON.stringify(paths)}`);
+
     const compressionMethod = await getCompressionMethod();
     let cacheId = -1;
 
     const cachePaths = await utils.resolvePaths(paths);
-    core.debug("Cache Paths:");
+    core.debug("S3 saveCache: resolved paths:");
     core.debug(`${JSON.stringify(cachePaths)}`);
 
     if (cachePaths.length === 0) {
@@ -265,6 +275,7 @@ export async function saveCache(
             cacheSize: archiveFileSize
         });
 
+        core.debug(`S3 saveCache: upload complete — key='${key}'`);
         // dummy cacheId, if we get there without raising, it means the cache has been saved
         cacheId = 1;
     } catch (error) {
