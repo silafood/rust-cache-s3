@@ -92,9 +92,11 @@ async function getCompressionMethod(): Promise<CompressionMethod> {
         // ignore
     }
     if (!versionOutput) {
+        core.info("zstd not detected, falling back to gzip compression");
         return CompressionMethod.Gzip;
     }
-    core.debug(`zstd detected: ${versionOutput.trim().split("\n")[0]}`);
+    const version = versionOutput.trim().split("\n")[0];
+    core.info(`zstd found (${version}), using zstd multi-threaded compression`);
     return CompressionMethod.ZstdWithoutLong;
 }
 
