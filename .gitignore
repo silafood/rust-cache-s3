@@ -4,7 +4,29 @@ src/*.js
 
 # Editors
 .idea/
+.vscode/
+*.swp
+*.swo
 
 # Mac
 .DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+
+# Logs
+*.log
+npm-debug.log*
+
+# TypeScript build cache
+*.tsbuildinfo
+
+# Env files
+.env
+.env.*
+
+# Tools
 openspec/
+.claude/
