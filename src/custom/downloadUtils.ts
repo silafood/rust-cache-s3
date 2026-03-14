@@ -93,8 +93,8 @@ export class DownloadProgress {
             (elapsedTime / 1000)
         ).toFixed(1);
 
-        core.info(
-            `Received ${transferredBytes} of ${this.contentLength} (${percentage}%), ${downloadSpeed} MBs/sec`
+        core.debug(
+            `S3 download progress: ${transferredBytes} of ${this.contentLength} bytes (${percentage}%), ${downloadSpeed} MBs/sec`
         );
 
         if (this.isDone()) {

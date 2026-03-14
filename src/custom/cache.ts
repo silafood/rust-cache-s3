@@ -72,15 +72,35 @@ export function isFeatureAvailable(): boolean {
 
 // @actions/cache's getCompressionMethod runs `zstd --quiet --version` which
 // suppresses stdout on many zstd builds, causing a silent fallback to gzip.
-// This replacement runs `zstd --version` without --quiet so detection works correctly.
+// This replacement probes zstd via `io.which` and common install paths,
+// then runs `zstd --version` without --quiet so detection works correctly.
 async function getCompressionMethod(): Promise<CompressionMethod> {
-    const zstdPath = await io.which("zstd", false);
+    // Try io.which first, then fall back to common install paths
+    let zstdPath = await io.which("zstd", false);
     if (!zstdPath) {
+        const candidates = ["/usr/bin/zstd", "/usr/local/bin/zstd", "/opt/homebrew/bin/zstd"];
+        for (const candidate of candidates) {
+            try {
+                await exec.exec(candidate, ["--version"], { ignoreReturnCode: true, silent: true });
+                zstdPath = candidate;
+                core.debug(`S3 zstd found at fallback path: ${candidate}`);
+                break;
+            } catch {
+                // not found at this path
+            }
+        }
+    } else {
+        core.debug(`S3 zstd found via PATH: ${zstdPath}`);
+    }
+
+    if (!zstdPath) {
+        core.info("zstd not found, falling back to gzip compression");
         return CompressionMethod.Gzip;
     }
+
     let versionOutput = "";
     try {
-        await exec.exec("zstd", ["--version"], {
+        await exec.exec(zstdPath, ["--version"], {
             ignoreReturnCode: true,
             silent: true,
             listeners: {
@@ -91,10 +111,12 @@ async function getCompressionMethod(): Promise<CompressionMethod> {
     } catch {
         // ignore
     }
+
     if (!versionOutput) {
-        core.info("zstd not detected, falling back to gzip compression");
+        core.info("zstd found but version check failed, falling back to gzip compression");
         return CompressionMethod.Gzip;
     }
+
     const version = versionOutput.trim().split("\n")[0];
     core.info(`zstd found (${version}), using zstd multi-threaded compression`);
     return CompressionMethod.ZstdWithoutLong;
