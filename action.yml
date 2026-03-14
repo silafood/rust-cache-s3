@@ -1,5 +1,5 @@
 name: "Rust Cache S3"
-description: "A GitHub Action that implements smart caching for rust/cargo projects with sensible defaults. Supports S3-compatible storage (RustFS/MinIO) via RUNS_ON_S3_BUCKET_CACHE env var."
+description: "Smart Rust/Cargo caching with sensible defaults. Supports S3-compatible storage (RustFS/MinIO) via RUNS_ON_S3_BUCKET_CACHE."
 author: "zeroows"
 inputs:
   prefix-key:
